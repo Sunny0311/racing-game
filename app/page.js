@@ -29,7 +29,107 @@ const OBS_COLORS = [
   "bg-fuchsia-500",
 ];
 
+// --- Obstacle kinds ---
+// speed = fall-speed multiplier, weight = relative spawn frequency,
+// bonus = points for dodging, after = seconds before this kind appears,
+// drift = moves sideways while falling.
+const OBS_TYPES = [
+  { type: "car", w: OBS_W, h: OBS_H, speed: 1.0, weight: 5, bonus: 30, after: 0 },
+  { type: "cone", w: 28, h: 34, speed: 1.0, weight: 3, bonus: 20, after: 0 },
+  { type: "oil", w: 60, h: 28, speed: 1.2, weight: 2, bonus: 25, after: 5 },
+  { type: "truck", w: 66, h: 100, speed: 0.78, weight: 2, bonus: 60, after: 9 },
+  { type: "racer", w: 32, h: 58, speed: 1.55, weight: 2, bonus: 45, after: 13, drift: true },
+];
+
 const clamp = (v, min, max) => (v < min ? min : v > max ? max : v);
+
+// Weighted random obstacle kind among those unlocked at the given time.
+function pickObstacleType(elapsed) {
+  const pool = OBS_TYPES.filter((t) => elapsed >= t.after);
+  const total = pool.reduce((sum, t) => sum + t.weight, 0);
+  let r = Math.random() * total;
+  for (const t of pool) {
+    r -= t.weight;
+    if (r < 0) return t;
+  }
+  return pool[pool.length - 1];
+}
+
+// One obstacle, drawn entirely with div + CSS (shape depends on its kind).
+function Obstacle({ o }) {
+  const box = { left: o.x, top: o.y, width: o.w, height: o.h };
+
+  if (o.type === "cone") {
+    return (
+      <div className="absolute" style={box}>
+        <div
+          className="absolute inset-0 bg-orange-500"
+          style={{ clipPath: "polygon(50% 0, 86% 100%, 14% 100%)" }}
+        >
+          <div className="absolute inset-x-0 top-[38%] h-[16%] bg-white/85" />
+        </div>
+        <div className="absolute inset-x-0 bottom-0 h-1.5 rounded-sm bg-orange-700" />
+      </div>
+    );
+  }
+
+  if (o.type === "oil") {
+    return (
+      <div className="absolute" style={box}>
+        <div className="absolute inset-0 rounded-[50%] bg-zinc-950/85 shadow-inner" />
+        <div className="absolute inset-0 rounded-[50%] bg-fuchsia-400/15" />
+        <div className="absolute inset-x-3 top-1 h-1 rounded-full bg-white/25" />
+      </div>
+    );
+  }
+
+  if (o.type === "truck") {
+    return (
+      <div className={`absolute rounded-md ${o.color} shadow-md`} style={box}>
+        {/* cargo box */}
+        <div className="absolute inset-x-1 top-[34%] bottom-2 rounded-sm bg-black/20" />
+        {/* cab windows */}
+        <div className="absolute inset-x-2 top-2 h-5 rounded-sm bg-sky-200/80" />
+        {/* cab/cargo divider */}
+        <div className="absolute inset-x-0 top-[32%] h-1 bg-black/40" />
+        {/* 6 wheels */}
+        <div className="absolute -left-1 top-3 h-4 w-1.5 rounded-sm bg-zinc-900" />
+        <div className="absolute -right-1 top-3 h-4 w-1.5 rounded-sm bg-zinc-900" />
+        <div className="absolute -left-1 top-1/2 h-4 w-1.5 -translate-y-1/2 rounded-sm bg-zinc-900" />
+        <div className="absolute -right-1 top-1/2 h-4 w-1.5 -translate-y-1/2 rounded-sm bg-zinc-900" />
+        <div className="absolute -left-1 bottom-3 h-4 w-1.5 rounded-sm bg-zinc-900" />
+        <div className="absolute -right-1 bottom-3 h-4 w-1.5 rounded-sm bg-zinc-900" />
+      </div>
+    );
+  }
+
+  if (o.type === "racer") {
+    return (
+      <div className={`absolute rounded ${o.color} shadow-lg`} style={box}>
+        {/* rear spoiler */}
+        <div className="absolute -left-1 -right-1 top-0 h-1.5 rounded-sm bg-zinc-900" />
+        {/* windshield */}
+        <div className="absolute inset-x-1 top-3 h-4 rounded-sm bg-sky-200/80" />
+        {/* racing stripe */}
+        <div className="absolute left-1/2 top-1 bottom-1 w-1 -translate-x-1/2 bg-white/70" />
+        <div className="absolute -left-1 bottom-3 h-4 w-1.5 rounded-sm bg-zinc-900" />
+        <div className="absolute -right-1 bottom-3 h-4 w-1.5 rounded-sm bg-zinc-900" />
+      </div>
+    );
+  }
+
+  // default: standard car
+  return (
+    <div className={`absolute rounded-md ${o.color} shadow-md`} style={box}>
+      <div className="absolute inset-x-1.5 top-1.5 h-4 rounded-sm bg-black/30" />
+      <div className="absolute inset-x-1.5 bottom-1.5 h-4 rounded-sm bg-black/30" />
+      <div className="absolute -left-1 top-2 h-3 w-1.5 rounded-sm bg-zinc-900" />
+      <div className="absolute -right-1 top-2 h-3 w-1.5 rounded-sm bg-zinc-900" />
+      <div className="absolute -left-1 bottom-2 h-3 w-1.5 rounded-sm bg-zinc-900" />
+      <div className="absolute -right-1 bottom-2 h-3 w-1.5 rounded-sm bg-zinc-900" />
+    </div>
+  );
+}
 
 // --- Background music: a looping chiptune over a C–Am–F–G progression ---
 const BGM_BPM = 132;
@@ -310,15 +410,22 @@ export default function Home() {
       if (keysRef.current.right) px += PLAYER_SPEED * dt;
       playerXRef.current = clamp(px, 0, ROAD_W - CAR_W);
 
-      // Spawn new obstacles.
+      // Spawn new obstacles (kind/size/speed/behavior vary by type).
       spawnAccRef.current += dt;
       while (spawnAccRef.current >= spawnInterval) {
         spawnAccRef.current -= spawnInterval;
         idRef.current += 1;
+        const kind = pickObstacleType(elapsed);
         obstaclesRef.current.push({
           id: idRef.current,
-          x: Math.random() * (ROAD_W - OBS_W),
-          y: -OBS_H,
+          type: kind.type,
+          x: Math.random() * (ROAD_W - kind.w),
+          y: -kind.h,
+          w: kind.w,
+          h: kind.h,
+          speedMul: kind.speed,
+          bonus: kind.bonus,
+          vx: kind.drift ? (Math.random() < 0.5 ? -1 : 1) * (45 + Math.random() * 55) : 0,
           color: OBS_COLORS[idRef.current % OBS_COLORS.length],
         });
       }
@@ -326,13 +433,25 @@ export default function Home() {
       // Move obstacles down; drop the ones that left the screen (+score for dodging).
       const next = [];
       for (const o of obstaclesRef.current) {
-        const ny = o.y + fall * dt;
+        const ny = o.y + fall * o.speedMul * dt;
         if (ny > ROAD_H) {
-          scoreRef.current += 30; // bonus for a dodged car
+          scoreRef.current += o.bonus; // bonus depends on the kind dodged
           playDodge();
           continue;
         }
         o.y = ny;
+        // Sideways drift (racers) — bounce off the road edges.
+        if (o.vx) {
+          let nx = o.x + o.vx * dt;
+          if (nx <= 0) {
+            nx = 0;
+            o.vx = -o.vx;
+          } else if (nx >= ROAD_W - o.w) {
+            nx = ROAD_W - o.w;
+            o.vx = -o.vx;
+          }
+          o.x = nx;
+        }
         next.push(o);
       }
       obstaclesRef.current = next;
@@ -348,9 +467,9 @@ export default function Home() {
       let crashed = false;
       for (const o of obstaclesRef.current) {
         if (
-          carL < o.x + OBS_W - HIT_INSET &&
+          carL < o.x + o.w - HIT_INSET &&
           carR > o.x + HIT_INSET &&
-          carT < o.y + OBS_H - HIT_INSET &&
+          carT < o.y + o.h - HIT_INSET &&
           carB > o.y + HIT_INSET
         ) {
           crashed = true;
@@ -478,20 +597,9 @@ export default function Home() {
           }}
         />
 
-        {/* Obstacles (enemy cars) */}
+        {/* Obstacles (cars, cones, oil slicks, trucks, racers) */}
         {obstacles.map((o) => (
-          <div
-            key={o.id}
-            className={`absolute rounded-md ${o.color} shadow-md`}
-            style={{ left: o.x, top: o.y, width: OBS_W, height: OBS_H }}
-          >
-            <div className="absolute inset-x-1.5 top-1.5 h-4 rounded-sm bg-black/30" />
-            <div className="absolute inset-x-1.5 bottom-1.5 h-4 rounded-sm bg-black/30" />
-            <div className="absolute -left-1 top-2 h-3 w-1.5 rounded-sm bg-zinc-900" />
-            <div className="absolute -right-1 top-2 h-3 w-1.5 rounded-sm bg-zinc-900" />
-            <div className="absolute -left-1 bottom-2 h-3 w-1.5 rounded-sm bg-zinc-900" />
-            <div className="absolute -right-1 bottom-2 h-3 w-1.5 rounded-sm bg-zinc-900" />
-          </div>
+          <Obstacle key={o.id} o={o} />
         ))}
 
         {/* Player car */}
