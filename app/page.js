@@ -31,6 +31,20 @@ const OBS_COLORS = [
 
 const clamp = (v, min, max) => (v < min ? min : v > max ? max : v);
 
+// --- Background music: a looping chiptune over a C–Am–F–G progression ---
+const BGM_BPM = 132;
+const BGM_VOL = 0.12; // master volume for the music bed (sits under SFX)
+// 16 eighth-note steps (0 = rest). Lead melody (C major pentatonic).
+const BGM_LEAD = [
+  523.25, 0, 783.99, 0, 659.25, 0, 523.25, 587.33,
+  659.25, 0, 587.33, 0, 523.25, 0, 440.0, 0,
+];
+// Root bassline: C3 · A2 · F2 · G2 (one chord per 4 steps).
+const BGM_BASS = [
+  130.81, 0, 130.81, 0, 110.0, 0, 110.0, 0,
+  87.31, 0, 87.31, 0, 98.0, 0, 98.0, 0,
+];
+
 export default function Home() {
   const [status, setStatus] = useState("ready"); // "ready" | "playing" | "over"
   // Snapshot published once per frame for rendering.
@@ -57,6 +71,7 @@ export default function Home() {
   const [muted, setMuted] = useState(false);
   const audioCtxRef = useRef(null);
   const engineRef = useRef(null); // { osc, gain } for the engine hum
+  const bgmRef = useRef(null); // background-music scheduler state
   const mutedRef = useRef(false);
 
   useEffect(() => {
@@ -158,19 +173,77 @@ export default function Home() {
     engineRef.current = null;
   }, []);
 
+  // Looping background music via a Web Audio lookahead scheduler.
+  const startBgm = useCallback(() => {
+    const ctx = audioCtxRef.current;
+    if (!ctx || bgmRef.current) return;
+
+    const master = ctx.createGain();
+    master.gain.setValueAtTime(mutedRef.current ? 0 : BGM_VOL, ctx.currentTime);
+    master.connect(ctx.destination);
+
+    const stepDur = 60 / BGM_BPM / 2; // eighth-note duration in seconds
+    const state = { master, step: 0, nextNoteTime: ctx.currentTime + 0.1, timer: 0 };
+
+    const playNote = (freq, time, dur, type, vol) => {
+      if (!freq) return;
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, time);
+      g.gain.setValueAtTime(0.0001, time);
+      g.gain.exponentialRampToValueAtTime(vol, time + 0.012);
+      g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+      osc.connect(g).connect(master);
+      osc.start(time);
+      osc.stop(time + dur + 0.03);
+    };
+
+    const tick = () => {
+      const c = audioCtxRef.current;
+      if (!c || bgmRef.current !== state) return; // stale timer guard
+      while (state.nextNoteTime < c.currentTime + 0.12) {
+        const i = state.step % BGM_LEAD.length;
+        playNote(BGM_LEAD[i], state.nextNoteTime, stepDur * 0.9, "square", 0.4);
+        playNote(BGM_BASS[i], state.nextNoteTime, stepDur * 0.95, "triangle", 0.55);
+        state.nextNoteTime += stepDur;
+        state.step += 1;
+      }
+    };
+
+    state.timer = window.setInterval(tick, 25);
+    bgmRef.current = state;
+    tick(); // prime the first notes immediately
+  }, []);
+
+  const stopBgm = useCallback(() => {
+    const state = bgmRef.current;
+    if (!state) return;
+    window.clearInterval(state.timer);
+    bgmRef.current = null; // flips the stale-timer guard before disconnecting
+    try {
+      state.master.disconnect(); // cuts any notes already scheduled in the lookahead
+    } catch {
+      // already disconnected
+    }
+  }, []);
+
   const toggleMute = useCallback(() => {
     const next = !mutedRef.current;
     mutedRef.current = next;
     setMuted(next);
-    const e = engineRef.current;
     const ctx = audioCtxRef.current;
+    const e = engineRef.current;
     if (e && ctx) e.gain.gain.setTargetAtTime(next ? 0 : 0.05, ctx.currentTime, 0.02);
+    const bgm = bgmRef.current;
+    if (bgm && ctx) bgm.master.gain.setTargetAtTime(next ? 0 : BGM_VOL, ctx.currentTime, 0.02);
   }, []);
 
   // Clean up audio on unmount.
   useEffect(() => {
     return () => {
       stopEngine();
+      stopBgm();
       const ctx = audioCtxRef.current;
       if (ctx) {
         try {
@@ -181,7 +254,7 @@ export default function Home() {
         audioCtxRef.current = null;
       }
     };
-  }, [stopEngine]);
+  }, [stopEngine, stopBgm]);
 
   const publish = useCallback(() => {
     setSnapshot({
@@ -211,6 +284,7 @@ export default function Home() {
     lastRef.current = performance.now();
     ensureAudio();
     startEngine();
+    startBgm();
 
     const loop = (now) => {
       const dt = Math.min((now - lastRef.current) / 1000, 0.05); // clamp big gaps
@@ -288,6 +362,7 @@ export default function Home() {
         const finalScore = Math.floor(scoreRef.current);
         setBest((b) => (finalScore > b ? finalScore : b));
         stopEngine();
+        stopBgm();
         playCrash();
         publish();
         setStatus("over");
@@ -302,8 +377,19 @@ export default function Home() {
     return () => {
       cancelAnimationFrame(rafRef.current);
       stopEngine();
+      stopBgm();
     };
-  }, [status, publish, ensureAudio, startEngine, stopEngine, playDodge, playCrash]);
+  }, [
+    status,
+    publish,
+    ensureAudio,
+    startEngine,
+    stopEngine,
+    startBgm,
+    stopBgm,
+    playDodge,
+    playCrash,
+  ]);
 
   // --- Keyboard controls ---
   useEffect(() => {
