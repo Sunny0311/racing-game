@@ -36,5 +36,5 @@ body {
 }
 
 .road-moving {
-  animation: road-scroll 0.35s linear infinite;
+  animation: road-scroll 0.15s linear infinite;
 }
