@@ -12,7 +12,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata = {
-  title: "🏎️ 2D 賽車遊戲",
+  title: "🏎️ 平面大賽車遊戲",
   description: "用 ← → 鍵閃避掉落障礙物的 2D 賽車小遊戲",
 };
 
